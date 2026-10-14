@@ -1,0 +1,5 @@
+.worker-identity{display:flex;align-items:center;justify-content:flex-start;gap:10px}
+.worker-identity-text{display:flex;flex:1;min-width:0;flex-direction:column;gap:5px}
+.worker-portrait{display:block;flex:none;width:44px;height:56px;object-fit:contain;object-position:center;background:#f5f7fa;border:1px solid #e5eaf1;border-radius:4px;padding:3px}
+.worker-portrait.portrait-small{width:32px;height:40px;padding:2px}
+.portrait-missing{display:flex;align-items:center;justify-content:center;color:#738197;font-size:18px;font-weight:400}

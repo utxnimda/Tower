@@ -1,0 +1,17 @@
+# Local Python runtime and installed packages
+vendor/
+runtime/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local service state and logs
+*.log
+server-process.json
+
+# User-specific plans, save-derived verification data, and generated game art
+results/
+test-output/
+web/assets/
+.pytest_cache/
+.coverage
