@@ -9,9 +9,9 @@ __pycache__/
 *.log
 server-process.json
 
-# User-specific plans, save-derived verification data, and generated game art
+# Locally extracted game art
+extracted_assets/
 results/
 test-output/
-web/assets/
 .pytest_cache/
 .coverage

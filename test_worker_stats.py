@@ -54,41 +54,38 @@ class WorkerStatTests(unittest.TestCase):
         if slot:
             self.data[1][15 + slot][2] = item
 
-    def evaluator(self, bare=False):
-        return WorkerEvaluator(self.data, self.tables, 1, bare)
+    def evaluator(self):
+        return WorkerEvaluator(self.data, self.tables, 1)
 
     def test_nonlinear_gear_recomputes_primary_and_skill(self):
         # Independent hand calculation from expressions 5202/5207/5255.
         self.data[1][11][2], self.data[1][14][2] = 65, 162.5
         self.data[1][32][2] = 39
         self.item(2, 2, 1, attrs=((41, 100), (2, 100)), level=35, quality=241)
-        bare, equipped = self.evaluator(True), self.evaluator()
+        equipped = self.evaluator()
         self.assertEqual(skill_base(39), 170)
-        self.assertEqual(bare.attribute(2), 22.75)
         self.assertAlmostEqual(equipped.attribute(2), 24.48)
         self.assertEqual(equipped.equipment(41), 58)
-        self.assertEqual(bare.attribute(41), 216)
         self.assertEqual(equipped.attribute(41), 345)
-        self.assertNotEqual(equipped.attribute(41) - equipped.equipment(41), bare.attribute(41))
 
-    def test_both_inner_pill_paths_retained_and_inactive_pill_ignored(self):
+    def test_current_equipment_both_inner_pill_paths_and_inactive_pill_ignored(self):
         self.item(2, 2, 5, attrs=((68, 100),), category="内丹")
         self.item(3, 3, storage=17, attrs=((68, 100),), category="内丹")
         self.item(4, 4, storage=17, attrs=((68, 100),), level=100, category="内丹")
         self.data[1][2][16], self.data[1][1][16] = 3, 1
         self.data[1][4][16], self.data[1][3][16] = 4, 0
         self.item(5, 5, 6, attrs=((68, 100),), category="宝物")
-        bare, equipped = self.evaluator(True), self.evaluator()
-        self.assertEqual(bare.attribute(68), 11)
+        equipped = self.evaluator()
         self.assertEqual(equipped.attribute(68), 16.5)
-        self.assertEqual(bare.attribute(50), 166)
+        self.assertEqual(equipped.attribute(50), 174)
         stats = calculate_worker_stats(self.data, self.tables, 1)
-        self.assertEqual([e["retainedInBare"] for e in stats["equipment"]], [True, False])
+        self.assertEqual([e["category"] for e in stats["equipment"]], ["内丹", "宝物"])
         self.assertEqual(len(stats["sources"]["innerPills"]), 1)
 
-    def test_category_retains_pill_even_outside_slot_five(self):
+    def test_saved_equipment_is_read_even_outside_usual_category_slot(self):
         self.item(2, 2, 1, attrs=((68, 100),), category="内丹")
-        self.assertEqual(self.evaluator(True).attribute(68), 5.5)
+        self.assertEqual(self.evaluator().attribute(68), 5.5)
+        self.assertEqual(calculate_worker_stats(self.data, self.tables, 1)["equipment"][0]["slot"], 1)
 
     def test_inner_pill_state_precedes_reference_in_first_second_and_last_slots(self):
         try:
@@ -125,7 +122,6 @@ class WorkerStatTests(unittest.TestCase):
         self.assertEqual(evaluator.set_info(1), (2, 8, 3))
         self.assertEqual(evaluator.attribute(56), 20)
         self.assertEqual(evaluator.attribute(90), 1)  # only 2 unique parts, no 4-piece bonus
-        self.assertEqual(self.evaluator(True).attribute(56), 0)
 
     def test_four_piece_multiplier_and_two_piece_are_not_counted_four_times(self):
         self.put("tz", 1, 1, "套装")
@@ -141,7 +137,6 @@ class WorkerStatTests(unittest.TestCase):
         for col, value in ((1, "职业被动"), (3, "被动"), (11, 72), (37, 100)):
             self.put("jn", 1, col, value)
         self.item(2, 2, 1, attrs=((15, 100),))
-        self.assertEqual(self.evaluator(True).attribute(72), 10)
         self.assertEqual(self.evaluator().attribute(72), 10.55)
 
     def test_talent_growth_is_recalculated_into_primary(self):
@@ -164,10 +159,9 @@ class WorkerStatTests(unittest.TestCase):
         self.assertEqual(rows[46]["jobType"], "建造")
         self.assertEqual(rows[47]["jobType"], "研究")
         self.assertEqual(rows[48]["jobType"], "操练")
-        self.assertEqual((rows[49]["equipped"], rows[49]["unit"]), (1, "秒/次"))
-        self.assertTrue(rows[49]["lowerIsBetter"])
-        self.assertEqual((rows[50]["equipped"], rows[50]["unit"]), (1.5, "格"))
-        self.assertEqual((rows[52]["equipped"], rows[52]["unit"]), (1.5, "×"))
+        self.assertEqual((rows[49]["value"], rows[49]["unit"]), (1, "秒/次"))
+        self.assertEqual((rows[50]["value"], rows[50]["unit"]), (1.5, "格"))
+        self.assertEqual((rows[52]["value"], rows[52]["unit"]), (1.5, "×"))
         self.assertNotIn(69, rows)
         self.assertEqual(rows[65]["unit"], "点/次")
 
@@ -176,9 +170,9 @@ class WorkerStatTests(unittest.TestCase):
         stats = calculate_worker_stats(self.data, self.tables, 1)
         rows = {r["id"]: r for r in stats["rows"]}
         self.assertEqual(stats["status"], "partial")
-        self.assertIsNone(rows[49]["bare"])
-        self.assertIsNone(rows[70]["equipped"])
-        self.assertIsNotNone(rows[40]["equipped"])
+        self.assertIsNone(rows[49]["value"])
+        self.assertIsNone(rows[70]["value"])
+        self.assertIsNotNone(rows[40]["value"])
         self.assertTrue(any("全局加成" in warning for warning in stats["warnings"]))
 
     def test_cycle_and_missing_tables_are_partial_not_recursion_or_import_failure(self):
@@ -197,7 +191,18 @@ class WorkerStatTests(unittest.TestCase):
         stats = calculate_worker_stats(self.data, self.tables, 1, expected_range=999)
         self.assertEqual(before, json.dumps((self.data, self.tables), ensure_ascii=False))
         self.assertEqual(stats["status"], "partial")
-        self.assertIsNone(next(r["equipped"] for r in stats["rows"] if r["id"] == 50))
+        self.assertIsNone(next(r["value"] for r in stats["rows"] if r["id"] == 50))
+
+    def test_output_contains_only_current_saved_attribute_values(self):
+        self.item(2, 2, 1, attrs=((40, 100),))
+        stats = calculate_worker_stats(self.data, self.tables, 1)
+        for row in stats["rows"]:
+            self.assertIn("value", row)
+            self.assertTrue({"bare", "equipped", "lowerIsBetter"}.isdisjoint(row))
+        self.assertNotIn("retainedInBare", stats["equipment"][0])
+        self.assertNotIn("barePreserves", stats["sources"])
+        self.assertEqual(stats["sources"]["dependencies"]["rawRangePixels"], 150)
+        self.assertFalse(stats["sources"]["runtimeBuffsIncluded"])
 
     def test_js_round_halves_and_interval_floor(self):
         self.assertEqual([js_round(x) for x in (0.5, 1.5, -0.5, -1.5)], [1, 2, 0, -1])

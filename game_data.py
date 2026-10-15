@@ -31,6 +31,7 @@ SAVE_KEY_RE = re.compile(r"^(savedir|backup|save)/ea([1-3])save\.dat$")
 ELEMENT_NAMES = ("金", "木", "水", "火", "土")
 JOB_TYPES = ("伐木", "采矿", "种植", "锻造", "工艺", "炼丹", "研究", "操练", "建造")
 TEMPLATE_TABLES = ("lw", "jz", "ss", "zy", "sx", "wp", "tf", "buff", "jn", "tz")
+LIMIT_TABLES = ("jc", "kj")
 MAP_SIZE = 50
 COORDINATE_ORIGIN = 10000
 READ_ATTEMPTS = 4
@@ -111,7 +112,7 @@ def _number(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     if not math.isfinite(result):
-        raise GameDataError("存档包含非有限数值，不能用于优化。")
+        raise GameDataError("存档包含非有限数值，无法可靠读取。")
     return result
 
 
@@ -206,10 +207,17 @@ def _load_templates_cached(package_path: str, signature: tuple) -> dict[str, lis
         return _load_templates_cached(package_path, actual_signature)
     try:
         with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
-            return {
+            tables = {
                 name: _array(json.loads(archive.read(f"{name}.json").decode("utf-8-sig")), f"{name}.json")
                 for name in TEMPLATE_TABLES
             }
+            # Older/partial packages can still supply the existing game
+            # data. A missing limit table must yield an unknown limit, never
+            # confuse the number already built with the construction cap.
+            for name in LIMIT_TABLES:
+                if f"{name}.json" in archive.namelist():
+                    tables[name] = _array(json.loads(archive.read(f"{name}.json").decode("utf-8-sig")), f"{name}.json")
+            return tables
     except (OSError, KeyError, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise GameDataError("package.nw 中缺少可读的建筑、灵物或人员属性配置。") from exc
 
@@ -217,6 +225,66 @@ def _load_templates_cached(package_path: str, signature: tuple) -> dict[str, lis
 def _template(templates: list, template_id: int, label: str) -> None:
     if template_id <= 0 or template_id >= len(templates):
         raise GameDataError(f"存档引用了未知{label}模板 {template_id}。")
+
+
+def _pedestal_limit(data: list, templates: dict[str, list], placed: int) -> dict[str, Any]:
+    """Reproduce building 67's construction cap, independently of aura range.
+
+    package.nw/data.json: 建筑数量上限 event 2006 / expression 1590:
+    10 + 加成属性效果(21). 进阶科技属性 event 4010 / expression 2576
+    adds one BEFORE integer conversion and division for bonus 21. Its jc
+    fields 4/5/6 are the step, percent-scaled amount and technology ID; field
+    7 is the optional office bonus (zero in the audited game configuration).
+    The technology's raw level is save[technology_id][4][0].
+    """
+    result = {"status": "unknown", "maximum": None, "placed": placed,
+              "remaining": None, "formula": "", "base": 10}
+    jc, kj = templates.get("jc", []), templates.get("kj", [])
+    if len(jc) <= 21 or not kj:
+        return {**result, "reason": "游戏配置缺少置物台上限或科技表，暂不能自动确定可建总数。"}
+
+    def strict_number(value: Any, label: str, *, integer: bool = False) -> float:
+        # These audited save/config cells are JSON numbers. Do not coerce
+        # missing data, booleans or strings into a plausible construction cap.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise GameDataError(f"{label}缺失或不是有效数值。")
+        number = float(value)
+        if not math.isfinite(number) or number < 0 or (integer and not number.is_integer()):
+            raise GameDataError(f"{label}不是有效的非负{'整数' if integer else '有限数值'}。")
+        return number
+
+    try:
+        if str(_cell(jc, 21, 3)) != "数值":
+            raise GameDataError("置物台上限的加成类型不是已核实的数值类型。")
+        office_id = strict_number(_cell(jc, 21, 7, default=None), "置物台上限的司职编号", integer=True)
+        if office_id != 0:
+            raise GameDataError("当前游戏为置物台上限配置了尚未支持的司职加成。")
+        technology_id = int(strict_number(_cell(jc, 21, 6, default=None), "置物台上限的科技编号", integer=True))
+        levels_per_bonus = strict_number(_cell(jc, 21, 4, default=None), "置物台上限的科技等级步长")
+        bonus_per_step = strict_number(_cell(jc, 21, 5, default=None), "置物台上限的加成量") / 100
+        if levels_per_bonus <= 0 or technology_id <= 0:
+            raise GameDataError("置物台上限的科技加成配置无效。")
+        _template(kj, technology_id, "科技")
+        raw_level = _cell(data, technology_id, 4, 0, default=None)
+        technology_level = int(strict_number(raw_level, "置物台上限对应的科技等级", integer=True))
+        bonus = math.floor(int(technology_level + 1) / levels_per_bonus) * bonus_per_step
+        maximum = 10 + bonus
+        if not maximum.is_integer():
+            raise GameDataError("置物台上限不是整数，当前配置超出已核实的规则。")
+        maximum = int(maximum)
+        return {
+            **result, "status": "verified", "maximum": maximum,
+            "remaining": max(0, maximum - placed),
+            "technologyId": technology_id,
+            "technologyName": str(_cell(kj, technology_id, 1)),
+            "technologyLevel": technology_level, "technologyLevelOffset": 1,
+            "levelsPerBonus": levels_per_bonus, "bonusPerStep": bonus_per_step,
+            "technologyBonus": bonus,
+            "formula": f"10 + floor(({technology_level} + 1) / {levels_per_bonus:g}) × {bonus_per_step:g} = {maximum}",
+            "source": "建筑数量上限(67) → 10 + 加成属性效果(21) → jc[21] / save[科技编号][4][0]",
+        }
+    except (GameDataError, ValueError, OverflowError) as exc:
+        return {**result, "reason": str(exc)}
 
 
 def building_cells(x: int, y: int, width: int, height: int) -> list[dict[str, int]]:
@@ -333,7 +401,7 @@ def _worker_range(data: list, slot: int, templates: dict[str, list],
     return (None if reasons else radius), evidence
 
 
-def _read_workers(data: list, templates: dict[str, list], facilities: list[dict]) -> list[dict]:
+def _read_workers(data: list, templates: dict[str, list]) -> list[dict]:
     workers = []
     unsupported = _worker_range_support(templates)
     for slot in range(1, len(data)):
@@ -351,15 +419,6 @@ def _read_workers(data: list, templates: dict[str, list], facilities: list[dict]
         state = str(_cell(data, slot, 9, 2, default="自动"))
         current_task = state if state in JOB_TYPES else None
         radius, evidence = _worker_range(data, slot, templates, unsupported)
-        candidates = []
-        if in_city and radius is not None:
-            nearby = [(10000 * ((f["x"] - x) ** 2 + (f["y"] - y) ** 2), f["jobType"])
-                      for f in facilities if f["jobType"] in JOB_TYPES]
-            nearby = [(distance, job) for distance, job in nearby if distance <= radius * radius]
-            if nearby:
-                nearest = min(distance for distance, _ in nearby)
-                candidates = sorted({job for distance, job in nearby if distance == nearest})
-        suggestion = current_task or (candidates[0] if len(candidates) == 1 else None)
         profession_id = _integer(_cell(data, slot, 6, 2))
         # Sprite 角色形象.SetAnim reads this exact value (events 631/8374,
         # generated expressions 677/4399), independently of profession/name.
@@ -373,12 +432,8 @@ def _read_workers(data: list, templates: dict[str, list], facilities: list[dict]
             "x": x, "y": y, "rawX": raw_x, "rawY": raw_y,
             "inMainCity": in_city, "deployed": raw_x > 0 and raw_y > 0,
             "settingState": state, "currentTaskType": current_task,
-            "suggestedJobType": suggestion, "suggestedJobCandidates": candidates,
-            "candidateJobTypes": candidates,
-            "suggestionSource": "setting-state" if current_task else "nearest-current-facility",
-            "suggestionIsActualTask": bool(current_task),
             "rangePixels": radius, "rangeTiles": radius / 100 if radius is not None else None,
-            "rangeEvidence": evidence, "selectable": in_city and radius is not None,
+            "rangeEvidence": evidence,
             "priorityTarget": {
                 "rawX": _integer(_cell(data, slot, 57, 2)),
                 "rawY": _integer(_cell(data, slot, 58, 2)),
@@ -389,53 +444,44 @@ def _read_workers(data: list, templates: dict[str, list], facilities: list[dict]
     return workers
 
 
-def calculate_baseline(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Reproduce current anchor-cell aura, without calling the optimizer."""
+def _read_current_aura(snapshot: dict[str, Any]) -> None:
+    """Attach current in-game aura to saved entities, with no layout scoring.
+
+    The values reproduce the game's current centre-cell calculation and each
+    placed item's tier-adjusted emission. No positions or items are changed.
+    """
     items = {item["id"]: item for item in snapshot["items"]}
     emitters = []
     for building in snapshot["buildings"]:
         item = items.get(building["itemId"])
         if building["template"] != 67 or item is None:
             continue
-        emitters.append({
-            "x": building["x"], "y": building["y"], "id": item["id"],
+        emission = {
             "qi": _game_round_tenth(item["qi"], building["tier"]),
             "elements": [_game_round_tenth(value, building["tier"]) for value in item["elements"]],
-        })
+            "radius": 3,
+        }
+        building["emittedAura"] = emission
+        emitters.append({"x": building["x"], "y": building["y"], "id": item["id"], **emission})
 
     def covering(x: int, y: int) -> list:
         return [e for e in emitters if abs(e["x"] - x) + abs(e["y"] - y) <= 3]
 
-    tribulations = []
     for building in snapshot["buildings"]:
         if building["template"] == 66:
             matches = covering(building["x"], building["y"])
-            tribulations.append({"buildingId": building["id"], "value": round(sum(e["qi"] for e in matches), 10)})
-    by_element = [0.0] * 5
-    counts = [0] * 5
-    facility_values = []
+            building["currentAura"] = {
+                "qi": round(sum(e["qi"] for e in matches), 10),
+                "contributingItemIds": [e["id"] for e in matches],
+            }
     for facility in snapshot["facilities"]:
         matches = covering(facility["x"], facility["y"])
         element = facility["element"]
         value = round(sum(e["elements"][element] for e in matches), 10)
-        by_element[element] += value
-        counts[element] += 1
-        facility_values.append({
-            **{k: facility[k] for k in ("id", "slot", "name", "element", "ownerId", "x", "y")},
-            "value": value, "contributingItemIds": [e["id"] for e in matches],
-        })
-    total = round(sum(by_element), 10)
-    return {
-        "D": tribulations[0]["value"] if tribulations else 0.0,
-        "S": total,
-        "average": total / len(facility_values) if facility_values else 0.0,
-        "byElement": [round(value, 10) for value in by_element],
-        "countsByElement": counts,
-        "facilityValues": facility_values,
-        "tribulationValues": tribulations,
-        "emitterCount": len(emitters),
-        "model": "anchor-manhattan-3-per-item-round-0.1",
-    }
+        facility["currentAura"] = {
+            "element": element, "value": value,
+            "contributingItemIds": [e["id"] for e in matches],
+        }
 
 
 def load_snapshot(game_dir: str | Path, key: str) -> dict[str, Any]:
@@ -499,10 +545,16 @@ def load_snapshot(game_dir: str | Path, key: str) -> dict[str, Any]:
         item_slot = _integer(_cell(data, slot, 9, 1)) if template_id == 67 else 0
         category = str(_cell(jz, template_id, 3))
         tier = _integer(_cell(data, slot, 5, 1))
+        # Building relocation event 2151 requires save[building,7,1] <= 0.
+        move_state = _number(_cell(data, slot, 7, 1), math.nan)
+        move_known = math.isfinite(move_state)
+        can_move = move_known and move_state <= 0
         buildings.append({
             "id": slot, "template": template_id, "name": str(_cell(jz, template_id, 1)),
             "x": x, "y": y, "width": width, "height": height,
             "tier": tier, "category": category,
+            "canMove": can_move, "moveStateValue": move_state if move_known else None,
+            "moveRestriction": "" if can_move else ("当前游戏状态暂不允许搬迁" if move_known else "建筑搬迁状态无法确认"),
             # Normal mode: event 2464, expressions 1726/1727. This is the
             # aggregate capacity across ALL facility templates of one owner.
             "facilityCapacity": tier * 4 + 4 if category == "资源" else tier + 2,
@@ -537,7 +589,7 @@ def load_snapshot(game_dir: str | Path, key: str) -> dict[str, Any]:
         _template(ss, template_id, "设施")
         cells = facility_positions.get(slot, [])
         if len(cells) != 1:
-            raise GameDataError(f"设施 {slot} 的坐标映射不是唯一单格，不能生成可靠方案。")
+            raise GameDataError(f"设施 {slot} 的坐标映射不是唯一单格，无法确定实际位置。")
         element = _integer(_cell(ss, template_id, 37)) - 1
         if not 0 <= element < 5:
             raise GameDataError(f"设施 {slot} 的五行类型不在本工具支持范围。")
@@ -562,10 +614,13 @@ def load_snapshot(game_dir: str | Path, key: str) -> dict[str, Any]:
                 "element": facility["element"], "jobType": facility["jobType"], "count": 0,
             }
         groups[group_id]["count"] += 1
-    workers = _read_workers(data, templates, facilities)
+    workers = _read_workers(data, templates)
     for worker in workers:
         if worker["inMainCity"] and worker["rangePixels"] is None:
-            warnings.append(f"{worker['name']} 的个人工作范围尚不能精确还原，暂不可选择。")
+            warnings.append(f"{worker['name']} 的个人工作范围尚不能精确还原。")
+    pedestal_limit = _pedestal_limit(data, templates, sum(b["template"] == 67 for b in buildings))
+    if pedestal_limit["status"] != "verified":
+        warnings.append(pedestal_limit["reason"])
     snapshot = {
         "id": digest[:20], "path": str(path), "key": key,
         "label": descriptor["label"], "timestamp": descriptor["timestamp"],
@@ -573,14 +628,11 @@ def load_snapshot(game_dir: str | Path, key: str) -> dict[str, Any]:
         "savedAt": descriptor["savedAt"], "sha256": digest,
         "bounds": bounds, "mapBounds": {"xmin": 1, "xmax": 50, "ymin": 1, "ymax": 50},
         "cityLevel": level, "coordinateOrigin": COORDINATE_ORIGIN,
+        "pedestalLimit": pedestal_limit,
         "items": items, "buildings": buildings, "facilities": facilities,
         "facilityGroups": list(groups.values()), "resources": resources,
-        "workers": workers, "workerConstraintVersion": 1, "jobTypes": list(JOB_TYPES),
-        "defaultWorkerAssignments": [
-            {"workerId": worker["id"], "jobType": worker["suggestedJobType"]}
-            for worker in workers if worker["selectable"] and worker["suggestedJobType"]
-        ],
-        "warnings": warnings, "schemaVersion": 1,
+        "workers": workers, "jobTypes": list(JOB_TYPES),
+        "warnings": warnings, "schemaVersion": 2,
         "source": {"key": key, "size": signature[0], "modifiedTimestamp": signature[1] // 1_000_000,
                    "saveDimensions": document["size"], "packagePath": str(package), "readOnly": True},
         "counts": {"items": len(items), "inventoryItems": sum(i["storage"] == 18 for i in items),
@@ -588,5 +640,5 @@ def load_snapshot(game_dir: str | Path, key: str) -> dict[str, Any]:
                    "facilities": len(facilities), "pedestals": sum(b["template"] == 67 for b in buildings),
                    "workers": len(workers), "mainCityWorkers": sum(w["inMainCity"] for w in workers)},
     }
-    snapshot["baseline"] = calculate_baseline(snapshot)
+    _read_current_aura(snapshot)
     return snapshot

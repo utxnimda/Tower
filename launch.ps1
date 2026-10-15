@@ -17,7 +17,7 @@ if (-not (Test-Path -LiteralPath $plannerGameDir -PathType Container)) {
 
 try {
     $plannerHealth = Invoke-RestMethod -Uri ($plannerUrl + 'api/health') -TimeoutSec 2
-    if ($plannerHealth.app -eq 'lingqi-planner' -and $plannerHealth.gameDir -eq $plannerGameDir) {
+    if ($plannerHealth.app -eq 'game-data-reader' -and $plannerHealth.gameDir -eq $plannerGameDir) {
         Start-Process $plannerUrl
         exit 0
     }
@@ -36,9 +36,6 @@ if (-not $plannerPython) {
     if ($plannerCommand) { $plannerPython = $plannerCommand.Source }
 }
 if (-not $plannerPython) { throw 'Python 3.12 was not found. See README.md for setup instructions.' }
-if (-not (Test-Path -LiteralPath (Join-Path $plannerRoot 'vendor\ortools'))) {
-    throw "Solver dependencies are missing. Run: `"$plannerPython`" -m pip install --target .\vendor -r .\requirements.txt. See README.md for the full setup."
-}
 $plannerOut = Join-Path $plannerRoot 'server.stdout.log'
 $plannerErr = Join-Path $plannerRoot 'server.stderr.log'
 $plannerArgs = @('-X', 'utf8', ('"' + (Join-Path $plannerRoot 'server.py') + '"'), '--game-dir', ('"' + $plannerGameDir + '"'), '--no-browser', '--port', "$plannerPort")
@@ -57,4 +54,4 @@ for ($plannerAttempt = 0; $plannerAttempt -lt 40; $plannerAttempt++) {
     $plannerProcess.Refresh()
     if ($plannerProcess.HasExited) { break }
 }
-throw "Planner startup failed. Read $plannerErr"
+throw "Game reader startup failed. Read $plannerErr"

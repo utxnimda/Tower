@@ -8,9 +8,9 @@ import zipfile
 from pathlib import Path
 
 try:
-    from .game_data import GameDataError, building_cells, list_saves, load_snapshot, _worker_range, _read_workers
+    from .game_data import GameDataError, building_cells, list_saves, load_snapshot, _worker_range, _read_workers, _pedestal_limit
 except ImportError:
-    from game_data import GameDataError, building_cells, list_saves, load_snapshot, _worker_range, _read_workers
+    from game_data import GameDataError, building_cells, list_saves, load_snapshot, _worker_range, _read_workers, _pedestal_limit
 
 
 def array(width, height, depth):
@@ -40,11 +40,17 @@ class GameDataTests(unittest.TestCase):
         self.worker_tables["sx"][68][4][0] = "百分比"
         self.worker_tables["tf"][36][7][0] = 68
         self.worker_tables["tf"][36][10][0] = 3
+        self.limit_tables = {name: array(50, 20, 1)["data"] for name in ("jc", "kj")}
+        for field, value in ((1, "置物台上限"), (3, "数值"), (4, 5), (5, 100), (6, 44)):
+            self.limit_tables["jc"][21][field][0] = value
+        self.limit_tables["kj"][44][1][0] = "灵物技术"
         with zipfile.ZipFile(self.root / "package.nw", "w") as archive:
             for name, table in (("jz", jz), ("lw", lw), ("ss", ss)):
                 archive.writestr(name + ".json", json.dumps(table))
             for name, data in self.worker_tables.items():
                 archive.writestr(name + ".json", json.dumps({"c2array": True, "size": [75, 30, 1], "data": data}))
+            for name, data in self.limit_tables.items():
+                archive.writestr(name + ".json", json.dumps({"c2array": True, "size": [50, 20, 1], "data": data}))
         self.save = array(201, 60, 22)
         data = self.save["data"]
         data[2][1][0] = 3
@@ -107,13 +113,108 @@ class GameDataTests(unittest.TestCase):
         self.assertEqual(snapshot["buildings"][2]["facilityCapacity"], 12)
         self.assertEqual(snapshot["facilityGroups"][0]["ownerCapacity"], 12)
 
+    def test_building_relocation_uses_saved_game_state_and_unknown_is_not_allowed(self):
+        for value, movable in ((0, True), (1, False), ("invalid", False)):
+            with self.subTest(value=value):
+                self.save["data"][3][7][1] = value
+                self.write_save("backup", 1, 2000)
+                building = next(b for b in load_snapshot(self.root, "backup/ea1save.dat")["buildings"] if b["id"] == 3)
+                self.assertEqual(building["canMove"], movable)
+                self.assertEqual(bool(building["moveRestriction"]), not movable)
+                if value == "invalid":
+                    self.assertIsNone(building["moveStateValue"])
+
+    def test_snapshot_reads_pedestal_cap_from_technology_not_built_count(self):
+        self.save["data"][44][4][0] = 85
+        self.write_save("backup", 1, 2000)
+        limit = load_snapshot(self.root, "backup/ea1save.dat")["pedestalLimit"]
+        self.assertEqual(limit["status"], "verified")
+        self.assertEqual((limit["maximum"], limit["placed"], limit["remaining"]), (27, 1, 26))
+        self.assertEqual((limit["technologyId"], limit["technologyName"], limit["technologyLevel"]),
+                         (44, "灵物技术", 85))
+        self.assertEqual(limit["formula"], "10 + floor((85 + 1) / 5) × 1 = 27")
+
+    def test_pedestal_cap_adds_one_before_five_level_threshold(self):
+        for level, expected in ((0, 10), (3, 10), (4, 11), (5, 11), (83, 26), (84, 27), (85, 27)):
+            with self.subTest(level=level):
+                self.save["data"][44][4][0] = level
+                limit = _pedestal_limit(self.save["data"], self.limit_tables, 0)
+                self.assertEqual(limit["maximum"], expected)
+
+    def test_pedestal_cap_uses_configured_technology_step_and_amount(self):
+        jc = self.limit_tables["jc"][21]
+        jc[4][0], jc[5][0], jc[6][0] = 4, 200, 13
+        self.limit_tables["kj"][13][1][0] = "替代科技"
+        self.save["data"][13][4][0] = 7
+        self.save["data"][44][4][0] = 85
+        limit = _pedestal_limit(self.save["data"], self.limit_tables, 2)
+        self.assertEqual((limit["maximum"], limit["remaining"]), (14, 12))
+        self.assertEqual((limit["technologyId"], limit["technologyName"]), (13, "替代科技"))
+
+    def test_pedestal_cap_does_not_guess_when_config_missing_or_office_bonus_unsupported(self):
+        missing = _pedestal_limit(self.save["data"], {}, 16)
+        self.assertEqual(missing["status"], "unknown")
+        self.assertIsNone(missing["maximum"])
+        self.assertIsNone(missing["remaining"])
+        self.limit_tables["jc"][21][7][0] = 2
+        office = _pedestal_limit(self.save["data"], self.limit_tables, 16)
+        self.assertEqual(office["status"], "unknown")
+        self.assertIsNone(office["maximum"])
+        self.assertIn("司职", office["reason"])
+
+    def test_pedestal_cap_unknown_on_invalid_step_or_missing_save_level(self):
+        self.limit_tables["jc"][21][4][0] = 0
+        invalid = _pedestal_limit(self.save["data"], self.limit_tables, 0)
+        self.assertEqual(invalid["status"], "unknown")
+        self.limit_tables["jc"][21][4][0] = 5
+        missing = _pedestal_limit([], self.limit_tables, 0)
+        self.assertEqual(missing["status"], "unknown")
+        self.assertIsNone(missing["maximum"])
+
+    def test_pedestal_cap_rejects_damaged_numeric_cells_without_zero_fallback(self):
+        for label, cell, extra_invalid in (
+            ("technology level", self.save["data"][44][4], [0.5, "85"]),
+            ("step", self.limit_tables["jc"][21][4], [0, "5"]),
+            ("amount", self.limit_tables["jc"][21][5], ["100"]),
+            ("technology ID", self.limit_tables["jc"][21][6], [44.5, "44"]),
+            ("office ID", self.limit_tables["jc"][21][7], [0.5, "0"]),
+        ):
+            original = cell[0]
+            for invalid in [None, False, True, "bad", float("nan"), float("inf"), -1, *extra_invalid]:
+                with self.subTest(field=label, invalid=repr(invalid)):
+                    cell[0] = invalid
+                    limit = _pedestal_limit(self.save["data"], self.limit_tables, 16)
+                    self.assertEqual(limit["status"], "unknown")
+                    self.assertIsNone(limit["maximum"])
+                    self.assertIsNone(limit["remaining"])
+            cell[0] = original
+        # Integral JSON floats retain the numeric semantics of the save format.
+        self.save["data"][44][4][0] = 85.0
+        self.assertEqual(_pedestal_limit(self.save["data"], self.limit_tables, 16)["maximum"], 27)
+
     def test_aura_uses_tier_and_separately_stored_qi(self):
         snapshot = load_snapshot(self.root, "backup/ea1save.dat")
         pedestal = next(b for b in snapshot["buildings"] if b["template"] == 67)
+        tribulation = next(b for b in snapshot["buildings"] if b["template"] == 66)
         self.assertEqual((pedestal["tier"], pedestal["level"]), (1, 9))
-        self.assertEqual(snapshot["baseline"]["D"], 1.2)
-        self.assertEqual(snapshot["baseline"]["S"], 1.3)
-        self.assertEqual(snapshot["baseline"]["byElement"], [1.3, 0, 0, 0, 0])
+        self.assertEqual(pedestal["emittedAura"], {
+            "qi": 1.2, "elements": [1.3, 2.5, 3.8, 5.1, 6.3], "radius": 3})
+        self.assertEqual(tribulation["currentAura"], {"qi": 1.2, "contributingItemIds": ["19:1"]})
+        self.assertEqual(snapshot["facilities"][0]["currentAura"], {
+            "element": 0, "value": 1.3, "contributingItemIds": ["19:1"]})
+
+    def test_current_aura_uses_centre_manhattan_distance_without_changing_positions(self):
+        data = self.save["data"]
+        # At (21, 10), the emitter can reach part of the 3x3 footprint, but
+        # its centre is four steps away. No centre-cell aura is present.
+        data[2][3][1] = 10010
+        self.write_save("backup", 1, 2000)
+        snapshot = load_snapshot(self.root, "backup/ea1save.dat")
+        tribulation = next(b for b in snapshot["buildings"] if b["template"] == 66)
+        pedestal = next(b for b in snapshot["buildings"] if b["template"] == 67)
+        self.assertEqual((pedestal["x"], pedestal["y"]), (21, 10))
+        self.assertEqual(tribulation["currentAura"], {"qi": 0, "contributingItemIds": []})
+        self.assertEqual(snapshot["facilities"][0]["currentAura"]["value"], 1.3)
 
     def test_game_multiplication_order_not_decimal_or_reassociated(self):
         # Values verified against the game's generated JS expressions. The first
@@ -125,8 +226,23 @@ class GameDataTests(unittest.TestCase):
                 self.save["data"][2][5][1] = tier
                 self.write_save("backup", 1, 2000)
                 snapshot = load_snapshot(self.root, "backup/ea1save.dat")
-                self.assertEqual(snapshot["baseline"]["D"], expected)
-                self.assertEqual(snapshot["baseline"]["S"], expected)
+                tribulation = next(b for b in snapshot["buildings"] if b["template"] == 66)
+                self.assertEqual(tribulation["currentAura"]["qi"], expected)
+                self.assertEqual(snapshot["facilities"][0]["currentAura"]["value"], expected)
+
+    def test_snapshot_contains_game_facts_without_planning_objectives_or_defaults(self):
+        self.make_worker(1)
+        self.write_save("backup", 1, 2000)
+        snapshot = load_snapshot(self.root, "backup/ea1save.dat")
+        self.assertEqual(snapshot["schemaVersion"], 2)
+        for key in ("baseline", "D", "S", "average", "defaultWorkerAssignments", "workerConstraintVersion"):
+            self.assertNotIn(key, snapshot)
+        worker = snapshot["workers"][0]
+        for key in ("suggestedJobType", "suggestedJobCandidates", "candidateJobTypes", "suggestionSource",
+                    "suggestionIsActualTask", "selectable"):
+            self.assertNotIn(key, worker)
+        self.assertEqual(worker["settingState"], "自动")
+        self.assertIsNone(worker["currentTaskType"])
 
     def test_footprints_even_anchor_and_odd_center(self):
         self.assertEqual(building_cells(4, 5, 2, 2), [
@@ -169,16 +285,13 @@ class GameDataTests(unittest.TestCase):
         self.assertEqual([w["id"] for w in snapshot["workers"]], ["w1", "w4"])
         worker, external = snapshot["workers"]
         self.assertEqual((worker["appearance"], worker["asset"]), ("潘金莲", "character:潘金莲"))
-        self.assertEqual((worker["profession"], worker["currentTaskType"], worker["suggestedJobType"]),
-                         ("屠夫", None, "锻造"))
+        self.assertEqual((worker["profession"], worker["settingState"], worker["currentTaskType"]),
+                         ("屠夫", "自动", None))
         self.assertEqual((worker["rangePixels"], worker["rangeTiles"]), (163, 1.63))
-        self.assertFalse(worker["suggestionIsActualTask"])
-        self.assertTrue(worker["selectable"])
+        self.assertTrue(worker["inMainCity"])
         self.assertFalse(external["inMainCity"])
-        self.assertFalse(external["selectable"])
         self.assertIsNone(external["x"])
-        self.assertEqual(snapshot["defaultWorkerAssignments"], [{"workerId": "w1", "jobType": "锻造"}])
-        self.assertEqual(snapshot["workerConstraintVersion"], 1)
+        self.assertEqual((external["rawX"], external["rawY"]), (30012, 30015))
 
     def test_worker_range_combines_talent_pill_and_equipment_without_affix_level(self):
         self.make_worker(1)
@@ -197,20 +310,20 @@ class GameDataTests(unittest.TestCase):
         self.assertEqual(evidence["components"]["internalPill68"], 8.5)
         self.assertEqual(evidence["status"], "exact")
 
-    def test_worker_suggestion_preserves_ambiguous_nearest_facility_jobs(self):
-        self.make_worker(1, 27, 10)
-        facilities = [{"x": 26, "y": 10, "jobType": "锻造"},
-                      {"x": 27, "y": 11, "jobType": "采矿"}]
-        worker = _read_workers(self.save["data"], self.worker_tables, facilities)[0]
-        self.assertIsNone(worker["suggestedJobType"])
-        self.assertEqual(set(worker["candidateJobTypes"]), {"锻造", "采矿"})
+    def test_worker_current_job_comes_only_from_saved_state(self):
+        self.make_worker(1, state="采矿")
+        self.make_worker(2, state="自动")
+        self.make_worker(3, state="休息")
+        workers = _read_workers(self.save["data"], self.worker_tables)
+        self.assertEqual([w["settingState"] for w in workers], ["采矿", "自动", "休息"])
+        self.assertEqual([w["currentTaskType"] for w in workers], ["采矿", None, None])
 
     def test_unhandled_runtime_buff_makes_range_unknown_not_base_radius(self):
         self.make_worker(1)
         self.worker_tables["buff"][1][3][0] = 68
-        worker = _read_workers(self.save["data"], self.worker_tables, [])[0]
+        worker = _read_workers(self.save["data"], self.worker_tables)[0]
         self.assertIsNone(worker["rangePixels"])
-        self.assertFalse(worker["selectable"])
+        self.assertIsNone(worker["rangeTiles"])
         self.assertEqual(worker["rangeEvidence"]["status"], "unknown")
         self.assertTrue(worker["rangeEvidence"]["reasons"])
 

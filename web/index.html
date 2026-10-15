@@ -1,64 +1,85 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="light"><title>灵气布局规划器</title>
-  <link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/worker-images.css"><link rel="stylesheet" href="/worker-stats.css"><link rel="stylesheet" href="/workspace.css"><script src="/app.js" defer></script><script src="/settings-tabs.js" defer></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>主城排布</title>
+  <link rel="stylesheet" href="/city.css">
+  <script defer src="/city.js"></script>
 </head>
 <body>
-  <header class="app-header">
-    <div class="brand"><h1>灵气布局规划器</h1></div>
-    <nav class="top-nav" aria-label="工作区"><button class="active" data-page="planner">布局推演</button><button data-page="inventory">灵物库 <span id="inventoryBadge">—</span></button><button data-page="rules">计算规则</button></nav>
-    <div class="header-status"><span class="status-dot" id="connectionDot"></span><span id="connectionText">正在连接本地服务</span><span class="readonly-badge">存档只读</span></div>
+  <header class="topbar">
+    <a class="brand" href="/">主城排布 <span>只读存档</span></a>
+    <div class="save-picker"><label class="sr-only" for="saveSelect">游戏存档</label><select id="saveSelect" aria-label="游戏存档"><option>正在查找存档…</option></select><button id="loadButton">读取存档</button></div>
+    <span id="snapshotDate" class="snapshot-date">尚未读取</span>
   </header>
-  <main id="plannerPage" class="page planner-page">
-    <aside class="settings panel">
-      <div class="panel-title"><span class="eyebrow">规划设置</span><button id="refreshSaves" class="icon-button" title="重新扫描存档" aria-label="重新扫描存档">↻</button></div>
-      <div class="settings-tablist" role="tablist" aria-label="规划设置分类" aria-orientation="horizontal"><button id="settings-tab-save" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-save" tabindex="0" data-settings-tab="save">存档</button><button id="settings-tab-area" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-area" tabindex="-1" data-settings-tab="area">区域</button><button id="settings-tab-pedestals" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-pedestals" tabindex="-1" data-settings-tab="pedestals">灵台</button><button id="settings-tab-facilities" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-facilities" tabindex="-1" data-settings-tab="facilities">设施</button><button id="settings-tab-workers" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-workers" tabindex="-1" data-settings-tab="workers">人员</button></div>
-      <section class="control-section settings-tabpanel" id="settings-panel-save" role="tabpanel" aria-labelledby="settings-tab-save"><label class="field-label" for="saveSelect">读取游戏存档</label><div class="save-row"><select id="saveSelect"><option>扫描中…</option></select><button id="loadSave" class="small-button">读取</button></div><p id="saveMeta" class="muted small">读取副本进行分析，不会写入游戏存档。</p></section>
-      <section class="control-section settings-tabpanel" id="settings-panel-area" role="tabpanel" aria-labelledby="settings-tab-area" hidden><div class="section-heading"><h2>规划矩形</h2><button id="useFullMap" class="text-button">使用已解锁区域</button></div><div class="form-grid"><label>X 起点<input id="rectX" type="number" step="1" value="1"></label><label>Y 起点<input id="rectY" type="number" step="1" value="1"></label><label>宽度 · 格<input id="rectW" type="number" min="3" step="1" value="18"></label><label>高度 · 格<input id="rectH" type="number" min="3" step="1" value="18"></label></div><p class="muted small" id="boundsHint">导入后显示主城坐标和边界。</p></section>
-      <section class="control-section settings-tabpanel" id="settings-panel-pedestals" role="tabpanel" aria-labelledby="settings-tab-pedestals" hidden><h2>灵台与取舍</h2><div class="form-grid"><label>最多摆放灵台<input id="maxPedestals" type="number" min="0" max="64" step="1" value="13"></label><label>新增灵台等阶<input id="newPedestalTier" type="number" min="0" max="20" step="1" value="0"></label><label>最多损失渡劫灵气<input id="delta" type="number" min="0" step="0.1" value="1"></label><label>1 点渡劫灵气价值<input id="weight" type="number" min="0" step="1" value="10"></label></div><label class="full-field">搜索时间 · 秒<input id="seconds" type="number" min="5" max="600" step="5" value="30"></label><p class="muted small">折中分数 = 渡劫灵气 × 权重 + 设施属性和。严格方案优先渡劫，折中方案受灵气损失上限约束。</p></section>
-      <section class="control-section facility-section settings-tabpanel" id="settings-panel-facilities" role="tabpanel" aria-labelledby="settings-tab-facilities" hidden><div class="section-heading"><h2>单格设施数量</h2><span class="tiny-tag">保留原归属</span></div><div id="elementTotals" class="element-totals"></div><div id="facilityRequests" class="facility-requests"><p class="muted small">读取存档后，按设施种类和所属建筑配置。</p></div><p class="muted small">所属主建筑固定。每座设施必须落在其主建筑有效范围内。</p></section>
-      <section class="control-section settings-tabpanel" id="settings-panel-workers" role="tabpanel" aria-labelledby="settings-tab-workers" hidden>
-        <h2>人员分工</h2><p class="muted small">在地图下方统一比较能力、安排工种和查看详情。</p>
-        <button id="openWorkers" type="button" class="secondary-button workers-shortcut">查看人员列表 ↓</button>
-        <p class="muted small">岗位以你的选择为准；未参与规划的人保持原位。</p>
+  <main class="workspace" id="workspace">
+    <div class="map-toolbar" aria-label="地图工具栏">
+      <div id="singleViewControls" class="segmented" aria-label="地图方案"><button id="viewBefore" class="active" aria-pressed="true">当前主城</button><button id="viewAfter" aria-pressed="false" disabled>规划结果</button></div>
+      <label class="check"><input id="unlockedOnly" type="checkbox" checked>只看解锁区</label>
+      <label class="check" title="生成方案后可左右对照，同编号代表同一个对象"><input id="compareMaps" type="checkbox" disabled>双图对比</label>
+      <button id="zoomOut" title="缩小" aria-label="缩小">−</button><output id="zoomValue">100%</output><button id="zoomIn" title="放大" aria-label="放大">＋</button>
+      <button id="fitMap">适配地图</button><button id="fullscreenButton">全屏</button><button id="toggleSettings" aria-expanded="true">收起设置</button>
+    </div>
+    <div id="mapStage" class="map-stage">
+      <section id="primaryPane" class="map-pane" aria-label="主城地图">
+        <div id="primaryMapLabel" class="map-pane-label"><strong>当前主城</strong><span>存档原位置</span></div>
+        <div id="mapViewport" class="map-viewport" tabindex="0" aria-label="主城地图。拖动平移，滚轮缩放，点击建筑或人物查看详情。">
+          <svg id="cityMap" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="主城二维地图"></svg>
+        </div>
       </section>
-      <div class="solve-footer"><div id="formError" class="error-message" role="alert" hidden></div><button id="solveButton" class="primary-button" disabled><span>开始推演</span><span>→</span></button><button id="cancelButton" class="secondary-button" hidden>停止搜索 · 保留已有结果</button><div id="jobProgress" class="job-progress" hidden><div class="progress-track"><i id="progressBar"></i></div><p id="progressText" aria-live="polite">正在准备…</p></div></div>
-    </aside>
-    <section class="main-workspace">
-      <div class="workspace-heading"><div><h2 id="workspaceTitle">主城布局</h2><p id="snapshotSummary" class="muted small">读取存档后开始规划</p></div><button id="exportLayout" class="secondary-button compact" disabled>导出布局 JSON</button></div>
-      <div class="metrics" id="metrics"><div class="metric primary"><span>渡劫台灵气</span><strong id="metricD">—</strong><small id="metricDNote">读取中心格总灵气</small></div><div class="metric"><span>设施生效属性和</span><strong id="metricS">—</strong><small id="metricSNote">按各设施对应五行累加</small></div><div class="metric"><span>每座设施平均</span><strong id="metricAverage">—</strong><small id="metricFacilityCount">— 座单格设施</small></div><div class="metric"><span>灵台 / 可用灵物</span><strong id="metricItems">—</strong><small id="metricProof">等待导入存档</small></div></div>
-      <div class="map-inspector">
-      <section class="board-panel panel">
-        <div class="board-topbar"><div class="segmented" id="layoutTabs"><button data-layout="baseline" class="active">当前布局</button><button data-layout="strict" disabled>渡劫优先</button><button data-layout="balanced" disabled>折中方案</button></div><div class="board-actions"><span class="map-view-label">2D 方格</span><button id="fitMap" class="icon-button" title="适配已解锁区域" aria-label="适配已解锁区域">⌖</button><button id="zoomOut" class="icon-button" title="缩小" aria-label="缩小">−</button><button id="zoomIn" class="icon-button" title="放大" aria-label="放大">＋</button></div></div>
-        <div class="overlay-toolbar"><span class="muted small">灵气分布</span><div id="heatmapButtons" class="heatmap-buttons"><button data-heat="none" class="active">地貌</button><button data-heat="qi">灵气</button><button data-heat="0" class="metal">金</button><button data-heat="1" class="wood">木</button><button data-heat="2" class="water">水</button><button data-heat="3" class="fire">火</button><button data-heat="4" class="earth">土</button></div><label class="check-label"><input id="showLabels" type="checkbox" checked>名称</label><label class="check-label"><input id="showSprites" type="checkbox" checked>游戏贴图</label></div>
-        <div id="canvasWrap" class="canvas-wrap"><canvas id="mapCanvas" tabindex="0" aria-label="主城布局地图，使用鼠标滚轮缩放，拖动平移，点击查看格子详情"></canvas><div id="emptyState" class="empty-state"><h3>尚未读取存档</h3><p>选择存档后，显示主城地图、建筑和灵物。</p></div><div id="hoverTip" class="hover-tip" hidden></div><div id="heatLegend" class="heat-legend" hidden><span id="heatMin">0</span><i></i><span id="heatMax">0</span></div></div>
-        <div class="board-bottom"><span id="mapSummary">等待存档</span><span>滚轮缩放 · 拖动平移 · 点击查看覆盖</span></div>
-        <details class="map-help"><summary>地图图例与摆放说明</summary><div class="map-legend"><span><i class="legend-dot tribulation"></i>渡劫台 · 中心受气</span><span><i class="legend-dot pedestal"></i>灵台 · 三步覆盖</span><span><i class="legend-dot facility"></i>设施 · 对应五行</span><span><i class="legend-dot worker"></i>人员 · 圆形工作范围</span><span><i class="legend-dot fixed"></i>固定建筑 / 原生资源</span><span><i class="legend-dot planning"></i>规划边界</span></div><p>灵气可穿过建筑；按清单在游戏中手动摆放。</p></details>
+      <section id="comparisonPane" class="map-pane" aria-label="规划结果对照地图" hidden>
+        <div class="map-pane-label"><strong>规划结果</strong><span>编号与左侧同一对象对应</span></div>
+        <div id="comparisonViewport" class="map-viewport" tabindex="0" aria-label="规划结果地图。缩放和平移与当前主城同步。">
+          <svg id="comparisonMap" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="规划结果二维地图"></svg>
+        </div>
       </section>
-        <aside id="mapDetails" class="details panel" hidden aria-label="地块详情">
-          <div class="map-detail-heading"><span id="detailHeading" class="eyebrow">地块详情</span><button id="closeMapDetails" type="button" class="icon-button" aria-label="关闭地块详情" title="关闭地块详情">×</button></div>
-          <div id="detailContent" class="detail-content"></div>
-        </aside>
+      <div id="mapEmpty" class="map-empty"><strong>从你的主城开始</strong><p>读取存档后显示完整地图、实际建筑和人物。<br>规划只生成建议，不会修改游戏。</p></div>
+    </div>
+    <aside id="settingsCard" class="floating-card settings-card" aria-label="规划设置">
+      <div class="card-heading"><div><h1>主城规划</h1><p>渡劫优先，其次研究与操练</p></div><span id="dirtyBadge" class="badge" hidden>设置已改</span></div>
+      <div class="tabs" role="tablist" aria-label="规划配置页签">
+        <button id="tab-layout" role="tab" aria-selected="true" aria-controls="panel-layout" data-tab="layout">布局</button>
+        <button id="tab-facilities" role="tab" aria-selected="false" aria-controls="panel-facilities" data-tab="facilities" tabindex="-1">设施</button>
+        <button id="tab-workers" role="tab" aria-selected="false" aria-controls="panel-workers" data-tab="workers" tabindex="-1">人员</button>
+        <button id="tab-moves" role="tab" aria-selected="false" aria-controls="panel-moves" data-tab="moves" tabindex="-1">迁移</button>
       </div>
-      <div id="workerCoverageNotice" class="result-notice coverage-notice" hidden></div>
-      <div id="resultNotice" class="result-notice" hidden></div>
-
-      <section id="personnelPanel" class="personnel-panel panel" aria-labelledby="personnelHeading">
-        <div class="personnel-header"><div class="section-heading"><h2 id="personnelHeading">人员与分工</h2><span id="workerCount" class="tiny-tag">尚未读取</span></div><p class="worker-stats-scope">存档常驻能力 · 无普通装备保留内丹 · 不含临时 BUFF</p></div>
-        <div class="personnel-toolbar"><div class="worker-comparison-controls"><label for="workerCompare">比较工种<select id="workerCompare"><option value="assigned">随岗位</option><option>伐木</option><option>采矿</option><option>种植</option><option>锻造</option><option>工艺</option><option>炼丹</option><option>研究</option><option>建造</option><option>操练</option></select></label><label for="workerSort">排序<select id="workerSort" disabled><option value="original">原顺序</option><option value="equipped">当前能力 ↓</option><option value="bare">无装能力 ↓</option><option value="gain">装备增益 ↓</option></select></label></div><p id="workerCompareHint" class="worker-compare-hint">随岗位查看；选择同一工种后可按能力排序。</p></div>
-        <div id="workerAssignments" class="worker-assignments"><p class="muted small">读取存档后显示人员。</p></div>
-        <div id="workerTotals" class="worker-totals"></div>
-        <section id="workerDetailPanel" class="worker-detail-panel" hidden aria-labelledby="workerDetailTitle"><div class="worker-detail-panel-heading"><h3 id="workerDetailTitle">人员详情</h3><button id="closeWorkerDetail" type="button" class="text-button" aria-label="收起人员详情">收起 ↑</button></div><div id="workerDetailContent"></div></section>
-      </section>
-      <section id="comparisonPanel" class="comparison-panel panel" hidden><div class="section-heading"><h2>方案对照</h2><button id="exportCSV" class="text-button">导出坐标 CSV</button></div><div class="table-scroll"><table><thead><tr><th>方案</th><th>渡劫灵气 D</th><th>设施属性和 S</th><th>平均</th><th>灵台</th><th>求解状态</th></tr></thead><tbody id="comparisonBody"></tbody></table></div></section>
-      <section id="placementPanel" class="comparison-panel placement-panel panel" hidden><div class="section-heading"><div><h2>摆放清单 <span id="placementMode" class="tiny-tag">当前布局</span></h2><p id="tribulationCoordinate" class="small muted"></p></div><div class="placement-actions"><button id="exportPlacementCSV" class="text-button">导出完整清单 CSV</button><button id="togglePlacement" class="icon-button" title="收起或展开清单" aria-label="收起或展开摆放清单">⌃</button></div></div><div id="placementContent"><div class="segmented placement-tabs"><button data-placement-tab="pedestals" class="active">灵台与灵物</button><button data-placement-tab="facilities">设施与归属</button><button data-placement-tab="workers">人员与工种</button></div><div class="table-scroll placement-scroll"><table><thead id="placementHead"></thead><tbody id="placementBody"></tbody></table></div><p class="small muted placement-help">编号与地图上的灵台圆标一致。点击表格行可定位并查看覆盖；坐标均为主城格坐标。</p></div></section>
-    </section>
-
+      <div class="settings-body">
+        <section id="panel-layout" role="tabpanel" aria-labelledby="tab-layout">
+          <fieldset><legend>规划方式</legend>
+            <label class="mode-choice"><input type="radio" name="mode" value="migration" checked><span><b>尽量少搬</b><small>满足收益优先级后，尽量减少当前城内迁移</small></span></label>
+            <label class="mode-choice"><input type="radio" name="mode" value="fresh"><span><b>重新排布</b><small>自由安排位置，不以保留原位置为目标</small></span></label>
+          </fieldset>
+          <div class="field-grid"><label>使用灵台数<input id="maxPedestals" type="number" min="0" step="1" value="0"></label><label>搜索时间（秒）<input id="seconds" type="number" min="5" max="600" step="1" value="45"></label></div>
+          <p id="pedestalHint" class="muted">读取存档后显示可用上限。</p>
+          <label class="field">研究／操练的优先方式<select id="priorityStrategy"><option value="focus">各优先一座，再提高其余</option><option value="balanced">均衡提高每座设施</option><option value="total">提高全部设施合计</option></select></label>
+          <p id="priorityDescription" class="hint"></p>
+          <label class="check field"><input id="allowMainBuildingMoves" type="checkbox" checked>允许调整主建筑位置</label>
+          <p id="lockSummary" class="muted">也可点击地图对象，单独锁定其存档位置。</p>
+          <details id="locksDetails"><summary>锁定指定主建筑</summary><p class="muted">勾选的建筑保持存档位置。游戏限制仍会单独检查。</p><div id="buildingLocks" class="lock-list"></div></details>
+          <div id="readWarnings" class="read-warnings"></div>
+        </section>
+        <section id="panel-facilities" role="tabpanel" aria-labelledby="tab-facilities" hidden>
+          <p class="panel-intro">数量由你决定，可填 0。非农林矿设施可设置每座至少容纳的工作人员。</p>
+          <div id="facilityRequests" class="facility-list"></div>
+          <h2>各工种人数</h2><p class="muted">农田、林地、矿场独立主分工，每块设施只计入一个人的份额。其他同工种人员在范围内仍可协助。</p>
+          <div id="jobRequirements" class="job-requirements"></div>
+        </section>
+        <section id="panel-workers" role="tabpanel" aria-labelledby="tab-workers" hidden>
+          <div class="panel-actions"><p class="panel-intro">按存档与当前能力给出职责建议，可逐人修改。</p><button id="autoAssignButton" class="small">按人数补齐人选</button></div>
+          <p id="workerCountHint" class="muted"></p><div id="workerRoster" class="worker-roster"></div>
+        </section>
+        <section id="panel-moves" role="tabpanel" aria-labelledby="tab-moves" hidden>
+          <div id="moveSummary" class="panel-intro">计算后，直接查看当前位置与目标位置的差异。</div>
+          <div class="export-actions"><button id="exportJson" disabled>导出完整方案</button><button id="exportCsv" disabled>导出迁移清单</button></div>
+          <div id="moveList" class="move-list"></div>
+        </section>
+      </div>
+      <footer class="settings-footer"><div id="formMessage" class="form-message" role="status" aria-live="polite">读取存档后即可设置。</div><div class="solve-row"><button id="solveButton" class="primary" disabled>开始规划</button><button id="cancelButton" hidden>停止搜索</button></div></footer>
+    </aside>
+    <aside id="detailCard" class="floating-card detail-card" aria-label="地图对象详情" hidden><button id="closeDetail" class="close-button" aria-label="关闭详情">×</button><div id="detailContent"></div></aside>
+    <div class="map-legend"><span><i class="legend-unlocked"></i>已解锁</span><span><i class="legend-pedestal"></i>灵台</span><span><i class="legend-priority"></i>研究／操练</span><span><i class="legend-worker"></i>人员</span><span class="legend-tip">拖动平移 · 滚轮缩放 · 点击查看</span></div>
+    <section id="resultBar" class="result-bar" aria-label="方案收益"><div><span>渡劫灵气</span><strong id="metricD">—</strong></div><div><span>研究 / 操练</span><strong id="metricPriority">—</strong></div><div><span>设施属性合计</span><strong id="metricS">—</strong></div><p id="resultStatus">仅读取游戏内容；计算结果需要在游戏中手动摆放。</p></section>
   </main>
-  <main id="inventoryPage" class="page inventory-page" hidden><div class="page-heading"><div><h2>灵物库</h2><p id="inventorySummary" class="muted">读取存档后，查看背包和已摆放的全部灵物。</p></div><button id="exportInventory" class="secondary-button" disabled>导出灵物 CSV</button></div><section class="panel inventory-panel"><div class="inventory-toolbar"><label class="search-field"><span>⌕</span><input id="itemSearch" type="search" placeholder="搜索灵物名称、编号…"></label><select id="itemSource" aria-label="灵物来源"><option value="all">全部来源</option><option value="placed">已摆放</option><option value="bag">背包</option><option value="excluded">已排除</option></select><select id="itemSort" aria-label="灵物排序"><option value="qi">灵气从高到低</option><option value="0">金从高到低</option><option value="1">木从高到低</option><option value="2">水从高到低</option><option value="3">火从高到低</option><option value="4">土从高到低</option><option value="name">按名称</option></select><button id="includeAll" class="text-button">恢复全部参与</button></div><div class="table-scroll"><table class="inventory-table"><thead><tr><th>参与</th><th>灵物 / 编号</th><th>来源</th><th>等级</th><th>品质</th><th>灵气</th><th class="metal">金</th><th class="wood">木</th><th class="water">水</th><th class="fire">火</th><th class="earth">土</th></tr></thead><tbody id="inventoryBody"><tr><td colspan="11" class="empty-table">请先读取存档。</td></tr></tbody></table></div></section></main>
-  <main id="rulesPage" class="page rules-page" hidden><div class="page-heading"><div><h2>计算与摆放规则</h2><p class="muted">这些规则用于解释推荐结果，所有游戏数据只读。</p></div></div><div class="rules-grid"><article class="panel rule-card"><span class="rule-number">01</span><h3>灵气传播</h3><p>灵台影响上下左右最多走 3 格可到达的地块，即曼哈顿距离 ≤ 3。灵气不被中间的建筑阻挡。</p><div class="formula">|x − x₀| + |y − y₀| ≤ 3</div></article><article class="panel rule-card"><span class="rule-number">02</span><h3>渡劫台只读中心格</h3><p>渡劫台占地 3×3，但其渡劫灵气取自中心格。灵物覆盖外侧占地格时，不会自动给中心加成。同一个来源贡献一次。</p></article><article class="panel rule-card"><span class="rule-number">03</span><h3>保留游戏舍入</h3><p>物品「灵气」是五行平均后取一位小数的独立字段。灵台每升一阶提高 15% 贡献；每件物品的每种属性分别取一位小数后再叠加。</p><div class="formula">round((10 × 属性) × (1 + 等阶 × 0.15)) / 10</div></article><article class="panel rule-card"><span class="rule-number">04</span><h3>设施归属与人员覆盖</h3><p>主建筑固定，设施不能越出其作用范围。锻造/采矿属金，工艺/伐木属木，研究/种植属水，炼丹属火，操练/建造属土。</p><p class="muted">人员独占空格，工作范围按各人实际半径的欧氏距离计算，基础半径 1.5 格可覆盖周围八格。同工种可跨主建筑服务；设施仍须保留有效归属。目标 S 使用各设施的生效属性之和。采矿、伐木、种植还存在土属性生长收益，当前不额外计入 S。</p></article><article class="panel rule-card"><span class="rule-number">05</span><h3>严格优先与有限取舍</h3><p>严格方案首先提高渡劫灵气 D，再优化设施属性和 S。折中方案在允许的 D 损失以内，提高「权重 × D + S」。例如权重 10 时，损失 1 点 D 至少应换得 10 点 S 才值得。</p></article><article class="panel rule-card"><span class="rule-number">06</span><h3>看清求解证据</h3><p>「找到可行方案」与「证明最优」不同。请以方案的证明状态、上界和诊断为准；有限时间搜索可能只找到更优可行解。无可行解时应调整范围、数量或排除条件。</p></article></div></main>
-  <div id="toast" class="toast" role="status" hidden></div>
 </body>
 </html>

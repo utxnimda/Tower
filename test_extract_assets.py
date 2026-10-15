@@ -41,16 +41,23 @@ class CharacterAssetTests(unittest.TestCase):
             project = [None, None, None, [
                 sprite("地图建筑", [anim("建筑", [frame(4)])]),
                 sprite("角色形象", [anim("潘金莲", [frame(0), frame(4)]), anim("B6", [frame(2)])]),
+                sprite("物品图标", [anim("兽血1", [frame(4)])]),
             ]]
             with zipfile.ZipFile(root / "package.nw", "w") as archive:
                 archive.writestr("data.json", json.dumps({"project": project}))
                 archive.writestr("images/test.png", buf.getvalue())
                 archive.writestr("jz.json", json.dumps({"data": [[[0], [""], [""]], [[1], ["新名"], ["建筑"]]]}))
                 archive.writestr("ss.json", json.dumps({"data": []}))
+                archive.writestr("lw.json", json.dumps({"data": [[[0], [""], [""]], [[1], ["妖狐灵火"], ["兽血1"]]]}))
             manifest = extract(root / "package.nw", out)
             self.assertEqual(manifest["jz1"], old_entry)
             self.assertEqual(old_file.read_bytes(), b"existing-building-must-stay-identical")
-            self.assertEqual(set(manifest), {"jz1", "character:潘金莲", "character:B6"})
+            self.assertEqual(set(manifest), {"jz1", "character:潘金莲", "character:B6", "lw1"})
+            self.assertEqual(manifest["lw1"]["animation"], "兽血1")
+            with Image.open(out / manifest["lw1"]["file"]) as image:
+                red, green, blue = image.convert("RGB").getpixel((0, 0))
+                self.assertGreater(blue, 230)
+                self.assertLess(red + green, 25)
             portrait = manifest[character_asset_key("潘金莲")]
             self.assertEqual(portrait["animation"], "潘金莲")
             self.assertEqual(portrait["sourceObject"], "角色形象")

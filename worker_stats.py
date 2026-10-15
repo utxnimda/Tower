@@ -1,9 +1,9 @@
-"""Permanent worker attributes from immutable Construct save/config arrays.
+"""Current permanent worker attributes from immutable save/config arrays.
 
-The two scenarios recalculate the dependency graph; they never mutate a save.
+Equipment and active inner pills are read exactly as recorded in the save.
 Event/expression numbers refer to the installed game's data.json/c3runtime.js.
-Runtime buff state is deliberately zero in BOTH scenarios. This module does
-not estimate output per second or include a facility's environment/technology.
+Runtime buffs are unavailable in the save and are excluded. These attributes
+do not include a facility's environment/technology or estimate output per second.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ JOBS = ("伐木", "采矿", "种植", "锻造", "工艺", "炼丹", "建造", "�
 DISPLAY_IDS = (*range(40, 69), 70, 72, 80, *range(90, 99), 1, 2, 3)
 SLOT_NAMES = ("", "装备位 1", "装备位 2", "装备位 3", "装备位 4", "穿戴内丹", "宝物")
 PROFESSION_LEVEL_CAP = 30  # constant SID 705033508603368; event sheet global
-NOTE = "存档常驻能力，不含临时 BUFF；无普通装备保留穿戴内丹和已炼化内丹。"
+NOTE = "按当前存档实际穿戴及已激活炼化内丹复算常驻能力；不含无法从存档恢复的临时 BUFF。"
 
 
 class UnsupportedStat(ValueError):
@@ -130,9 +130,9 @@ def set_attribute(coefficient, score, kind):
 
 
 class WorkerEvaluator:
-    """One worker, one equipment scenario. Public attribute() returns raw units."""
-    def __init__(self, data, tables, role, bare=False):
-        self.data, self.tables, self.role, self.bare = data, tables, int(role), bare
+    """One saved worker's current attributes, returned in the game's raw units."""
+    def __init__(self, data, tables, role):
+        self.data, self.tables, self.role = data, tables, int(role)
         self._active = set()
         self._cache = {}
         self.gear = []
@@ -141,9 +141,7 @@ class WorkerEvaluator:
             if item > 0:
                 template = int(self.item(item, 1, 9))
                 self.require("wp", template)
-                retained = self.table("wp", template, 4) == "内丹" or self.table("wp", template, 6) == 5
-                if not bare or retained:
-                    self.gear.append((slot, item, template))
+                self.gear.append((slot, item, template))
         self.pills = []
         for slot in range(1, 9):
             item = int(self.saved(2 * slot, 16))
@@ -329,15 +327,13 @@ def display_value(attr, value):
 
 
 def calculate_worker_stats(data, tables, role, expected_range=None):
-    """Return JSON-safe card/detail data, isolating unsupported dependencies."""
+    """Read current permanent attributes, isolating unsupported dependencies."""
     warnings = []
-    evaluators = {}
-    for name, bare in (("bare", True), ("equipped", False)):
-        try:
-            evaluators[name] = WorkerEvaluator(data, tables, role, bare)
-        except (UnsupportedStat, ValueError, OverflowError) as exc:
-            warnings.append(f"{'无普通装备' if bare else '当前装备'}：{exc}")
-            evaluators[name] = None
+    try:
+        evaluator = WorkerEvaluator(data, tables, role)
+    except (UnsupportedStat, ValueError, OverflowError) as exc:
+        warnings.append(f"当前穿戴：{exc}")
+        evaluator = None
 
     rows = []
     for attr in DISPLAY_IDS:
@@ -349,27 +345,23 @@ def calculate_worker_stats(data, tables, role, expected_range=None):
                "group": "primary" if attr < 4 else "work" if attr < 49 else "basic" if attr <= 52 else "bonus"}
         if 40 <= attr <= 48:
             row.update(jobType=JOBS[attr - 40], skillLevel=cell(data, role, attr - 9, 2), skillCap=cell(data, role, attr - 18, 2))
-        if attr == 49:
-            row["lowerIsBetter"] = True
         if attr == 80:
             row["note"] = "生产职业工作时生效；此处显示原始常驻倍率。"
         if attr in (65, 66, 67):
             row["note"] = "对应工种单次工作量的固定追加，不等同于最终物品数量。"
-        for scenario, evaluator in evaluators.items():
-            try:
-                row[scenario] = display_value(attr, evaluator.attribute(attr)) if evaluator else None
-            except (UnsupportedStat, ValueError, OverflowError, ZeroDivisionError) as exc:
-                row[scenario] = None
-                message = f"{label}（{'无普通装备' if scenario == 'bare' else '当前装备'}）：{exc}"
-                if message not in warnings:
-                    warnings.append(message)
+        try:
+            row["value"] = display_value(attr, evaluator.attribute(attr)) if evaluator else None
+        except (UnsupportedStat, ValueError, OverflowError, ZeroDivisionError) as exc:
+            row["value"] = None
+            message = f"{label}：{exc}"
+            if message not in warnings:
+                warnings.append(message)
         rows.append(row)
 
     equipment = []
-    equipped = evaluators["equipped"]
+    equipped = evaluator
     if equipped:
         for slot, item, template in equipped.gear:
-            retained = equipped.table("wp", template, 4) == "内丹" or equipped.table("wp", template, 6) == 5
             direct = []
             attr_ids = [int(number(equipped.table("wp", template, 8 + i))) for i in range(3)]
             attr_ids += [int(equipped.item(item, 9 + i, 9)) for i in range(6)]
@@ -384,26 +376,23 @@ def calculate_worker_stats(data, tables, role, expected_range=None):
             equipment.append({"slot": slot, "slotName": SLOT_NAMES[slot], "itemId": f"9:{item}",
                               "template": template, "name": equipped.table("wp", template, 1),
                               "level": equipped.item(item, 6, 9), "tier": equipped.item(item, 3, 9),
-                              "category": equipped.table("wp", template, 4), "retainedInBare": retained,
+                              "category": equipped.table("wp", template, 4),
                               "attributes": direct, "attributesScope": "工作相关直接属性；套装在人物总值中重算"})
     if expected_range is not None:
-        radius = next(row["equipped"] for row in rows if row["id"] == 50)
+        radius = next(row["value"] for row in rows if row["id"] == 50)
         if radius is not None and not math.isclose(radius * 100, expected_range, rel_tol=0, abs_tol=1e-9):
-            warnings.append("工作范围与现有覆盖解析不一致，范围对比暂不可用。")
-            next(row for row in rows if row["id"] == 50).update(equipped=None, bare=None)
+            warnings.append("工作范围的两条读取路径结果不一致，当前范围未确认。")
+            next(row for row in rows if row["id"] == 50)["value"] = None
 
     profession = int(number(cell(data, role, 6, 2)))
-    dependencies = {}
-    for scenario, evaluator in evaluators.items():
-        if not evaluator:
-            dependencies[scenario] = None
-            continue
+    dependencies = None
+    if evaluator:
         def safely(function, *args):
             try:
                 return function(*args)
             except (UnsupportedStat, ValueError, OverflowError, ZeroDivisionError):
                 return None
-        dependencies[scenario] = {
+        dependencies = {
             "primary": [safely(evaluator.attribute, a) for a in (1, 2, 3)],
             "growth": [safely(evaluator.attribute, a) for a in (104, 105, 106)],
             "professionWorkCoefficient": safely(evaluator.profession_coefficient),
@@ -413,8 +402,7 @@ def calculate_worker_stats(data, tables, role, expected_range=None):
     return {"status": "partial" if warnings else "exact", "scope": "permanent", "note": NOTE,
             "warnings": warnings, "level": cell(data, role, 3, 2),
             "professionLevel": cell(data, role, profession, 4), "rows": rows, "equipment": equipment,
-            "sources": {"model": "construct-permanent-worker-v1", "runtimeBuffsIncluded": False,
-                        "barePreserves": ["穿戴内丹", "已激活炼化内丹", "天赋", "当前职业", "永久成长", "技艺等级"],
+            "sources": {"model": "construct-current-worker-v2", "runtimeBuffsIncluded": False,
                         "dependencies": dependencies,
                         "innerPills": [{"slot": slot, "itemId": f"17:{item}", "template": template,
                                         "name": equipped.table("wp", template, 1)}

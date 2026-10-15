@@ -32,14 +32,14 @@ def extract(archive_path: str | Path | None = None, output_dir: str | Path | Non
 
     root = Path(__file__).resolve().parent
     archive_path = Path(archive_path) if archive_path else root.parent / "package.nw"
-    out = Path(output_dir) if output_dir else root / "web" / "assets"
+    out = Path(output_dir) if output_dir else root / "extracted_assets"
     out.mkdir(parents=True, exist_ok=True)
     manifest_path = out / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
     with zipfile.ZipFile(archive_path) as archive:
         project = json.loads(archive.read("data.json"))["project"]
         # Object names are more stable than Construct's numeric object indexes.
-        animations = _frames(project, "地图建筑")
+        building_animations = _frames(project, "地图建筑")
         sheets = {}
 
         def save_frame(key, file, frame, metadata):
@@ -60,13 +60,16 @@ def extract(archive_path: str | Path | None = None, output_dir: str | Path | Non
             crop.save(out / file, "WEBP", quality=86, method=4)
             manifest[key] = {"file": file, **metadata}
 
-        for prefix, table_file in (("jz", "jz.json"), ("ss", "ss.json")):
+        animation_tables = [("jz", "jz.json", building_animations), ("ss", "ss.json", building_animations)]
+        if "lw.json" in archive.namelist():
+            animation_tables.append(("lw", "lw.json", _frames(project, "物品图标")))
+        for prefix, table_file, animations in animation_tables:
             table = json.loads(archive.read(table_file))["data"]
             for template, row in enumerate(table):
                 if not template or len(row) < 3:
                     continue
                 anim_name = str(row[2][0])
-                # Base forms suffice for planning. Several game animations add a
+                # Several game animations add a
                 # numeric upgrade suffix, so look for the first exported frame.
                 frame = animations.get(anim_name) or animations.get(anim_name + "1")
                 if frame is None:
